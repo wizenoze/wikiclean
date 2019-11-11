@@ -21,6 +21,10 @@ import org.wikiclean.languages.English;
 import org.wikiclean.languages.Language;
 import org.wikiclean.languages.Languages;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -46,6 +50,7 @@ public class WikiClean {
 
   private boolean withTitle;
   private boolean withFooter;
+  private boolean withImages;
   private Language lang;
 
   private boolean keepLinks = false;
@@ -98,6 +103,14 @@ public class WikiClean {
    */
   public boolean withFooter() {
     return withFooter;
+  }
+
+  private void setWithImages(boolean flag) {
+    this.withImages = flag;
+  }
+
+  private boolean withImages() {
+    return withImages;
   }
 
   private void setLanguage(Language lang) {
@@ -218,16 +231,51 @@ public class WikiClean {
     content = compressMultipleNewlines(content);
 
     if (withTitle) {
-      return getTitle(page) + "\n\n" + content.trim();
+      content =  getTitle(page) + "\n\n" + content;
     }
 
     return content.trim();
   }
 
+  /*
+
+  From wikipedia docs:
+  "Caption (the last option that is not recognised as some other part of the image syntax)"
+
+   */
+  public List<Image> images(String page) {
+    String content = getWikiMarkup(page);
+
+    content = removeRefs(content);
+    content = removeInterWikiLinks(content);
+    content = removeParentheticals(content);
+    content = fixUnitConversion(content);
+    content = DoubleBracesRemover.remove(content);
+    content = removeHtmlComments(content);
+    content = removeEmphasis(content);
+    content = removeHeadings(content);
+    content = removeCategoryLinks(content);
+
+
+    content = removeMath(content);
+    content = removeGallery(content);
+    content = removeNoToc(content);
+    content = removeIndentation(content);
+
+    content = TableRemover.remove(content);
+
+    // For some reason, some HTML entities are doubly encoded.
+    content = StringEscapeUtils.unescapeHtml4(StringEscapeUtils.unescapeHtml4(content));
+    content = removeHtmlTags(content);
+
+    return ImagesExtractor.extract(content);
+  }
+
+
   private static final Pattern UNIT_CONVERSION1 =
-      Pattern.compile("\\{\\{convert\\|(\\d+)\\|([^|]+)\\}\\}");
+          Pattern.compile("\\{\\{convert\\|(\\d+)\\|([^|]+)\\}\\}");
   private static final Pattern UNIT_CONVERSION2 =
-      Pattern.compile("\\{\\{convert\\|(\\d+)\\|([^|]+)\\|[^}]+\\}\\}");
+          Pattern.compile("\\{\\{convert\\|(\\d+)\\|([^|]+)\\|[^}]+\\}\\}");
 
   private String fixUnitConversion(String s) {
     String t = UNIT_CONVERSION1.matcher(s).replaceAll("$1 $2");
@@ -241,7 +289,7 @@ public class WikiClean {
   }
 
   private static final Pattern GALLERY = Pattern.compile("&lt;gallery&gt;.*?&lt;/gallery&gt;",
-      Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+          Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
   private String removeGallery(String s) {
     return GALLERY.matcher(s).replaceAll("");
@@ -260,7 +308,7 @@ public class WikiClean {
   }
 
   private static final Pattern MATH = Pattern.compile("&lt;math&gt;.*?&lt;/math&gt;",
-      Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+          Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
   private String removeMath(String s) {
     return MATH.matcher(s).replaceAll("");
@@ -319,7 +367,7 @@ public class WikiClean {
   }
 
   private static final Pattern HTML_COMMENT = Pattern.compile(
-      "(<|&lt;|&#60;)!--.*?--(>|&gt;|&#62;)", Pattern.DOTALL);
+          "(<|&lt;|&#60;)!--.*?--(>|&gt;|&#62;)", Pattern.DOTALL);
 
   private String removeHtmlComments(String s) {
     return HTML_COMMENT.matcher(s).replaceAll("");
@@ -351,7 +399,7 @@ public class WikiClean {
     private static final int STATE_1OPEN_BRACKET = 2;
 
     private static String remove(String s) {
-      String[] labels = { "[[File:", "[[Image:", "[[Datei" // We see this in de wikipedia.
+      String[] labels = { "[[File:", "[[Image:", "[[Datei:" , "[[Bestand:"
       };
       for (String label : labels) {
         s = removeLabel(s, label);
@@ -408,6 +456,155 @@ public class WikiClean {
       }
 
       return s;
+    }
+  }
+
+  private static final class ImagesExtractor {
+    private static final int DEFAULT_NO_BRACKET = 0;
+    private static final int STATE_1CLOSE_BRACKET = 1;
+    private static final int STATE_1OPEN_BRACKET = 2;
+
+    public static Set<String> KEYWORDS = new HashSet<>();
+    public static String ALT_KEYWORD = "alt=";
+
+    static {
+      KEYWORDS.add("thumb");
+      KEYWORDS.add("thumbnail");
+      KEYWORDS.add("frame");
+      KEYWORDS.add("framed");
+      KEYWORDS.add("frameless");
+
+      KEYWORDS.add("border");
+
+      KEYWORDS.add("right");
+      KEYWORDS.add("left");
+      KEYWORDS.add("center");
+      KEYWORDS.add("none");
+
+      KEYWORDS.add("baseline");
+      KEYWORDS.add("middle");
+      KEYWORDS.add("sub");
+      KEYWORDS.add("super");
+      KEYWORDS.add("text-top");
+      KEYWORDS.add("text-bottom");
+      KEYWORDS.add("top");
+      KEYWORDS.add("bottom");
+
+      KEYWORDS.add("upright");
+
+      KEYWORDS.add("link=");
+      KEYWORDS.add("page=");
+      KEYWORDS.add("lang=");
+    }
+
+    public static Set<String> IMAGE_TAGS = new HashSet<>();
+
+    static {
+      IMAGE_TAGS.add("[[File:");
+      IMAGE_TAGS.add("[[Image:");
+      IMAGE_TAGS.add("[[Datei:");// We see this in DE wikipedia.
+      IMAGE_TAGS.add("[[Bestand:"); // NL Wikipedia
+    }
+
+    private static final Pattern LINKS1 = Pattern.compile("\\[\\[[^\\]]+\\|([^\\]]+)\\]\\]");
+    private static final Pattern LINKS2 = Pattern.compile("(\\[\\[|\\]\\])");
+
+    private static String removeLinks(String s) {
+      return LINKS2.matcher(LINKS1.matcher(s).replaceAll("$1")).replaceAll("");
+    }
+
+
+    private static List<Image> extract(String s) {
+      List<Image> extracted = new ArrayList<>();
+
+      for (String label : IMAGE_TAGS) {
+        extracted.addAll(extractLabel(s, label));
+      }
+      return extracted;
+    }
+
+    // This method encodes a finite state machine to handle links in caption, which result in
+    // nested [[ ... [[foo]] ... ]] constructs.
+    private static List<Image> extractLabel(String s, String label) {
+      List<Image> images = new ArrayList<>();
+
+      int i = s.indexOf(label);
+      while (i != -1) {
+        int state = DEFAULT_NO_BRACKET;
+        int level = 1;
+        int cur = i + label.length();
+
+        int prevChunk = i + label.length(); // First chunk starts after the opening [[Image:
+        List<String> chunks = new ArrayList<>();
+
+        while (cur < s.length()) {
+
+          // we've found the end of a chunck
+          if (level == 1 && state == DEFAULT_NO_BRACKET && s.charAt(cur) == '|') {
+            chunks.add(s.substring(prevChunk, cur));
+            prevChunk = cur + 1;
+          }
+
+          if (state == STATE_1OPEN_BRACKET && s.charAt(cur) == '[') {
+            level++;
+            state = DEFAULT_NO_BRACKET;
+          }
+          // If there's only one close, move back to default state.
+          if (state == STATE_1OPEN_BRACKET) {
+            state = DEFAULT_NO_BRACKET;
+          }
+          if (s.charAt(cur) == '[') {
+            state = STATE_1OPEN_BRACKET;
+          }
+
+          if (state == STATE_1CLOSE_BRACKET && s.charAt(cur) == ']') {
+            level--;
+            if (level == 0) {
+              break;
+            }
+            state = DEFAULT_NO_BRACKET;
+          } else {
+            // If there's only one close, move back to default state.
+            if (state == STATE_1CLOSE_BRACKET) {
+              state = DEFAULT_NO_BRACKET;
+            }
+            if (s.charAt(cur) == ']') {
+              state = STATE_1CLOSE_BRACKET;
+            }
+          }
+          cur++;
+        }
+
+        chunks.add(s.substring(prevChunk, cur - 1));
+        i = s.indexOf(label, i + 1);
+
+        images.add(chunksToImage(chunks));
+
+      }
+
+      return images;
+    }
+
+    private static Image chunksToImage(List<String> chunks) {
+
+      Image image = new Image();
+
+      image.setUrl(chunks.get(0)); // first chunk is the url
+
+      for (String chunk : chunks.subList(1, chunks.size())) {
+        if (chunk.startsWith(ALT_KEYWORD)) {
+          image.setAlt(chunk.substring(ALT_KEYWORD.length()));
+          continue;
+        }
+        for (String keyword : KEYWORDS) {
+          if (chunk.startsWith(keyword)) {
+            continue;
+          }
+        }
+        image.setCaption(removeLinks(chunk));
+      }
+
+      return image;
     }
   }
 
@@ -523,6 +720,41 @@ public class WikiClean {
     }
   }
 
+  public static class Image {
+    String url;
+    String alt;
+    String caption;
+
+    public String getUrl() {
+      return url;
+    }
+
+    public void setUrl(String url) {
+      this.url = url;
+    }
+
+    public String getAlt() {
+      return alt;
+    }
+
+    public void setAlt(String alt) {
+      this.alt = alt;
+    }
+
+    public String getCaption() {
+      return caption;
+    }
+
+    public void setCaption(String caption) {
+      this.caption = caption;
+    }
+
+    public String toString() {
+      return url + "|" + alt + "|" + caption;
+    }
+  }
+
+
   /**
    * Builder object for {@link WikiClean}.
    */
@@ -556,6 +788,7 @@ public class WikiClean {
       this.withFooter = flag;
       return this;
     }
+
 
     /**
      * Sets the language.
