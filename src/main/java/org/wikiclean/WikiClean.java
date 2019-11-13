@@ -231,7 +231,7 @@ public class WikiClean {
     content = compressMultipleNewlines(content);
 
     if (withTitle) {
-      content =  getTitle(page) + "\n\n" + content;
+      return getTitle(page) + "\n\n" + content.trim();
     }
 
     return content.trim();
